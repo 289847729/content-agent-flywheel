@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import base64
+from html import escape
 import re
 import sys
 from pathlib import Path
@@ -185,6 +186,7 @@ def _block_html(node, t: dict, part_counter: list[int]) -> str:
         text = node.text_content().strip()
         if not text:
             return ""
+        safe_text = escape(text, quote=False)
         if tag == "h2":
             part_counter[0] += 1
             number = f"{part_counter[0]:02d}"
@@ -192,18 +194,16 @@ def _block_html(node, t: dict, part_counter: list[int]) -> str:
                 f'<section style="margin:26px 0 14px">'
                 f'<p style="font-size:10px;color:{t["accent"]};letter-spacing:2px;margin:0 0 6px">'
                 f'{t["label"]} {number}</p>'
-                f'<p style="font-size:19px;font-weight:900;color:{t["ink"]};margin:0;line-height:1.4">{text}</p>'
+                f'<p style="font-size:19px;font-weight:900;color:{t["ink"]};margin:0;line-height:1.4">{safe_text}</p>'
                 f'<section style="height:4px;width:44px;background:{t["accent"]};border-radius:2px;margin-top:8px"></section>'
                 f"</section>"
             )
         if tag == "h1":
             return (
                 f'<p style="font-size:20px;font-weight:900;color:{t["ink"]};margin:24px 0 12px;line-height:1.4">'
-                f"{text}</p>"
+                f"{safe_text}</p>"
             )
-        return (
-            f'<p style="font-size:16px;font-weight:700;color:{t["accent"]};margin:18px 0 10px">{text}</p>'
-        )
+        return f'<p style="font-size:16px;font-weight:700;color:{t["accent"]};margin:18px 0 10px">{safe_text}</p>'
     if tag in ("ul", "ol"):
         # 微信会重置 list-style，改用符号 + 悬挂缩进保证圆点可见
         items = []
@@ -267,20 +267,22 @@ def _block_html(node, t: dict, part_counter: list[int]) -> str:
         text = node.text_content().strip()
         if not text:
             return ""
+        safe_text = escape(text, quote=False)
         return (
             f'<section style="background:{t["accent_light"]};border-left:4px solid {t["accent"]};'
             f'border-radius:0 12px 12px 0;padding:14px 16px;margin:0 0 16px">'
-            f'<p style="font-size:14px;color:{t["ink"]};margin:0;line-height:1.8">{text}</p>'
+            f'<p style="font-size:14px;color:{t["ink"]};margin:0;line-height:1.8">{safe_text}</p>'
             f"</section>"
         )
     if tag == "pre":
         code = node.text_content().rstrip("\n")
         if not code:
             return ""
+        safe_code = escape(code, quote=False)
         return (
             f'<pre style="background:#F8FAFC;border:1px solid {t["line"]};border-radius:12px;'
-            f"padding:14px 16px;font-size:13px;line-height:1.6;overflow-x:auto;margin:0 0 16px>"
-            f'<code style="color:{t["ink"]}">{code}</code></pre>'
+            f'padding:14px 16px;font-size:13px;line-height:1.6;overflow-x:auto;margin:0 0 16px">'
+            f'<code style="color:{t["ink"]}">{safe_code}</code></pre>'
         )
     if tag == "hr":
         return (

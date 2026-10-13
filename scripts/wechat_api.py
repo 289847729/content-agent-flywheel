@@ -363,6 +363,10 @@ def push_draft(html_path: Path, title: str, author: str, outdir: Path, update_me
         media_id = update_media_id
     else:
         created = post_json("/cgi-bin/draft/add", token, {"articles": [article]}, timeout=60)
+        if str(created.get("errcode", 0)) != "0":
+            errcode = created.get("errcode")
+            errmsg = created.get("errmsg") or "未知错误"
+            raise WeChatError(f"微信草稿创建失败（errcode={errcode}）：{errmsg}")
         media_id = str(created.get("media_id") or "")
         if not media_id:
             raise WeChatError(f"微信草稿创建响应没有 media_id：{created}")
