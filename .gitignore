@@ -1,0 +1,32 @@
+# Local credentials and environment files
+config.env
+.env
+.env.*
+!.env.example
+*.secret
+*secret*.json
+*token*.json
+*.pem
+*.key
+
+# Generated content, runtime state and private source material
+outputs/
+style-refs/*
+!style-refs/.gitkeep
+scratch/
+vibe_images/
+__agent__/
+.opencode/
+
+# Python and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/

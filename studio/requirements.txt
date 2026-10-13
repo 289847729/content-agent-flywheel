@@ -1,0 +1,11 @@
+# 飞轮可视化操作台（studio/）依赖
+fastapi>=0.110
+uvicorn>=0.27
+markdown>=3.5
+# 复用已有依赖：lxml（微信推送）、Pillow（封面绘制）
+lxml>=5.0
+Pillow>=10.0
+# 多平台发布包：Markdown → Word 导出
+python-docx>=1.1
+# 浏览器自动化推送（今日头条等创作者后台）
+playwright>=1.40.0

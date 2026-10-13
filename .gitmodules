@@ -1,0 +1,3 @@
+[submodule ".agents/vendor/handraw-style"]
+	path = .agents/vendor/handraw-style
+	url = https://github.com/yang0/handraw-style.git

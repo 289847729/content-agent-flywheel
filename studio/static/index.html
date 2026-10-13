@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>公众号内容飞轮 · 可视化操作台</title>
+  <link rel="stylesheet" href="/static/style.css?v=20261010-batch">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">F</span>
+      <div>
+        <h1>公众号内容飞轮</h1>
+        <p>选题自动入库 → 选题变文章 → 排版推送草稿箱</p>
+      </div>
+    </div>
+    <div class="health">
+      <span class="badge" id="health-feishu">飞书 …</span>
+      <span class="badge" id="health-wechat">微信 …</span>
+      <span class="badge" id="health-llm">LLM …</span>
+      <span class="badge" id="health-table">表结构 …</span>
+      <button class="btn ghost" id="btn-refresh-health" type="button">刷新状态</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="steps" id="steps">
+      <button class="step active" data-step="1" type="button"><span class="step-no">1</span><span class="step-name">自动筛选<small>拉取并过滤选题库</small></span></button>
+      <button class="step" data-step="2" type="button"><span class="step-no">2</span><span class="step-name">手动挑选<small>已选中的写作队列</small></span></button>
+      <button class="step" data-step="3" type="button"><span class="step-no">3</span><span class="step-name">文案生成<small>LLM 生成初稿并编辑</small></span></button>
+      <button class="step" data-step="4" type="button"><span class="step-no">4</span><span class="step-name">文案预览<small>排版预览与微调</small></span></button>
+      <button class="step" data-step="5" type="button"><span class="step-no">5</span><span class="step-name">发送公众号<small>推送到草稿箱</small></span></button>
+    </nav>
+
+    <main class="workspace">
+      <!-- 阶段 1：自动筛选 -->
+      <section class="panel active" id="panel-1">
+        <div class="panel-head">
+          <h2>自动筛选</h2>
+          <p>从飞书选题库拉取全部选题，筛选排序后直接勾选并标记为「选中」。</p>
+        </div>
+        <div class="toolbar-stack">
+          <!-- 第一排：全部操作按钮 -->
+          <div class="toolbar-row toolbar-actions">
+            <button class="btn primary" id="btn-fetch-topics" type="button">拉取选题库</button>
+            <button class="btn radar" id="btn-scan-hot" type="button" title="从 Hacker News & Hugging Face 抓取过去 24h 内真实一手科技爆料并写入飞书">⚡ 扫描海外热点入库</button>
+            <button class="btn radar" id="btn-scan-skills" style="background:#4f46e5;color:#fff;border-color:#4f46e5;font-weight:600;" type="button" title="从 GitHub 与开发者社区扫描高增速、真好用的实用 AI Skill / MCP 神器并写入飞书">🔧 扫描实用 Skill 入库</button>
+            <select class="input" id="radar-limit" style="width: 80px;" title="抓取条数">
+              <option value="5" selected>5 条</option>
+              <option value="10">10 条</option>
+            </select>
+            <button class="btn" id="btn-open-import-modal" type="button" style="background:#0284c7;color:#fff;border-color:#0284c7;font-weight:600;" title="根据 X (Twitter) 推文或外部链接拉取原文与全部原图并自动生成矩阵">🐦 导入X推文/链接</button>
+            <button class="btn primary" id="btn-mark-selected" type="button">把勾选的选题标记为「选中」</button>
+            <button class="btn ghost" id="btn-goto-queue" type="button">去写作队列 →</button>
+            <button class="btn ghost" id="btn-toggle-import" type="button">批量入库（粘贴 JSON）</button>
+            <span class="hint" id="select-count"></span>
+            <span class="hint" id="mark-status"></span>
+          </div>
+          <!-- 第二排：全部查询条件（默认选中今天） -->
+          <div class="toolbar-row toolbar-filters">
+            <div class="chips" id="status-chips">
+              <button class="chip active" data-status="" type="button">全部</button>
+              <button class="chip" data-status="待定" type="button">待定</button>
+              <button class="chip" data-status="选中" type="button">选中</button>
+              <button class="chip" data-status="已推送" type="button">已推送</button>
+            </div>
+            <div class="chips" id="direction-chips">
+              <button class="chip active" data-direction="" type="button">全部方向</button>
+              <button class="chip" data-direction="实用Skill/效率神器" type="button">🔧 实用 Skill</button>
+            </div>
+            <div class="chips" id="date-chips">
+              <button class="chip" data-date="" type="button">全部日期</button>
+              <button class="chip active" data-date="today" type="button">今天</button>
+            </div>
+            <input class="input search" id="topic-keyword" type="text" placeholder="按标题关键词过滤…">
+            <select class="input" id="topic-sort">
+              <option value="default">默认排序</option>
+              <option value="date-desc">入库日期 新→旧</option>
+              <option value="traffic">流量预估 高→低</option>
+            </select>
+            <span class="hint" id="topic-count"></span>
+          </div>
+        </div>
+        <div id="topic-import-box" hidden>
+          <label class="label" for="topic-import-json">选题 JSON 数组（每项可选字段：选题标题 / 关键词 / 内容方向 / 流量预估 / 备注）</label>
+          <textarea class="editor small" id="topic-import-json" placeholder='[
+  {"选题标题": "…", "关键词": "…", "内容方向": "…", "流量预估": "高", "备注": "…"}
+]'></textarea>
+          <div class="row">
+            <button class="btn primary" id="btn-import-topics" type="button">确认入库</button>
+            <span class="hint" id="topic-import-status"></span>
+          </div>
+        </div>
+        <div class="batch-publish-panel" id="batch-publish-panel">
+          <div class="batch-publish-head"><div><h3>批量发布</h3><p class="hint">勾选多条选题后，一次生成公众号草稿与多平台本地素材。</p></div><span class="batch-badge">批量任务</span></div>
+          <div class="batch-publish-options">
+            <label class="field"><span class="label">文案模板</span><select class="input" id="batch-template"><option value="auto" selected>auto · 智能推荐</option></select></label>
+            <label class="field"><span class="label">公众号主题</span><select class="input" id="batch-theme"><option value="moyu-green" selected>moyu-green · 摸鱼绿</option><option value="graphite-minimal">graphite-minimal · 石墨极简</option><option value="olive-journal">olive-journal · 橄榄手记</option></select></label>
+            <label class="field"><span class="label">排版引擎</span><select class="input" id="batch-engine"><option value="builtin" selected>builtin · 内置主题</option><option value="bmmd">bmmd · bmmd 引擎</option></select></label>
+            <label class="field"><span class="label">作者</span><input class="input" id="batch-author" type="text" placeholder="使用作者配置提示"><span class="hint" id="batch-author-hint">留空使用后端作者配置</span></label>
+            <button class="btn primary" id="btn-submit-batch" type="button">提交批量任务</button>
+          </div>
+          <span class="hint" id="batch-selection-count">已勾选 0 条</span>
+          <p class="batch-platform-notice">公众号：仅推送到草稿箱，不会自动发表。　小红书 / 今日头条：仅在本地生成素材，请下载后人工审核发布。</p>
+          <div class="row"><span class="hint" id="batch-poll-message"></span><button class="btn small ghost" id="btn-refresh-batch" type="button" hidden>刷新进度</button></div>
+          <div id="batch-job-status" class="batch-job-status" hidden></div>
+        </div>
+        <div class="topic-table-container" id="topic-cards"><p class="empty">还没有数据，点击「拉取选题库」。</p></div>
+      </section>
+
+      <!-- 阶段 2：手动挑选（写作队列） -->
+      <section class="panel" id="panel-2">
+        <div class="panel-head">
+          <h2>手动挑选</h2>
+          <p>在第 1 步勾选并标记为「选中」后，这里自动显示写作队列，点「去写稿」进入第 3 步。</p>
+        </div>
+        <h3 class="subhead">写作队列（状态 = 选中）</h3>
+        <div class="queue" id="write-queue"><p class="empty">暂无选中选题。</p></div>
+      </section>
+
+      <!-- 阶段 3：文案生成 -->
+      <section class="panel" id="panel-3">
+        <div class="panel-head">
+          <h2>文案生成</h2>
+          <p>从写作队列选一条选题，按题材、备注约束与文风参考生成初稿，并参考近期开头避免重复。</p>
+        </div>
+        <div class="row">
+          <select class="input grow" id="gen-topic-select"><option value="">— 选择写作队列中的选题 —</option></select>
+          <button class="btn ghost" id="btn-reload-queue" type="button">刷新队列</button>
+        </div>
+        <div class="topic-detail" id="gen-topic-detail"><p class="empty">选择选题后显示完整字段与备注约束。</p></div>
+        <div class="row wrap" id="style-refs-box">
+          <span class="label">文风参考：</span><span class="hint" id="style-refs">加载中…</span>
+        </div>
+        <div class="row wrap" id="gen-template-box" style="align-items: center; gap: 8px;">
+          <span class="label" style="min-width: 80px;">文案风格：</span>
+          <select class="input grow" id="gen-template-select">
+            <option value="auto">智能推荐（按题材匹配风格与开篇方式）</option>
+          </select>
+        </div>
+        <p class="hint">支持八种风格，按题材选择事实、结论、问题或对比开篇。亲历与实测叙述需有作者提供的真实材料。</p>
+        <div class="row">
+          <button class="btn primary" id="btn-generate" type="button">生成初稿</button>
+          <span class="hint" id="gen-status"></span>
+        </div>
+        <label class="label" for="draft-title">文章标题</label>
+        <input class="input full" id="draft-title" type="text" placeholder="标题默认取选题标题，可修改">
+        <div class="row" style="justify-content: space-between; align-items: baseline; margin-top: 12px; margin-bottom: 4px;">
+          <label class="label" for="draft-markdown" style="margin: 0;">初稿（Markdown，可编辑）</label>
+          <div class="draft-capacity-meter" id="draft-capacity-meter">
+            <span class="draft-char-count" id="draft-char-count">0 汉字</span>
+            <span class="draft-meter-badge" id="draft-meter-badge">微信排版容量：预估安全</span>
+          </div>
+        </div>
+        <textarea class="editor" id="draft-markdown" placeholder="生成后在此编辑…"></textarea>
+        <div class="capacity-alert" id="draft-capacity-alert" hidden>
+          <span class="alert-icon">⚠️</span>
+          <span class="alert-msg" id="draft-alert-msg">当前初稿篇幅偏长（已超 1400 字），微信排版后极大概率超过 20,000 字符限制！</span>
+          <button class="btn small warn" id="btn-compress-draft" type="button">✂️ 一键精简至安全篇幅</button>
+        </div>
+        <div class="row">
+          <button class="btn primary" id="btn-save-draft" type="button">保存初稿（写入 outputs/ 并回填飞书）</button>
+          <button class="btn ghost" id="btn-goto-preview" type="button">带着初稿去预览 →</button>
+          <span class="hint" id="save-status"></span>
+        </div>
+      </section>
+
+      <!-- 阶段 4：文案预览 -->
+      <section class="panel" id="panel-4">
+        <div class="panel-head">
+          <h2>文案预览</h2>
+          <p>模型根据当前标题和正文自动提炼核心主题、选择视觉风格并生成封面，再完成排版；内置主题与 bmmd 引擎共享同一张主题封面。</p>
+        </div>
+        <div class="row wrap">
+          <div class="field"><label class="label">标题</label><input class="input" id="pv-title" type="text"></div>
+          <div class="field"><label class="label">作者</label><input class="input" id="pv-author" type="text"></div>
+          <div class="field"><label class="label">排版引擎</label>
+            <select class="input" id="pv-engine">
+              <option value="builtin">内置主题（3 款）</option>
+              <option value="bmmd">bmmd 引擎（16 款样式）</option>
+            </select>
+          </div>
+          <div class="field" id="field-pv-theme"><label class="label">主题</label>
+            <select class="input" id="pv-theme">
+              <option value="moyu-green">摸鱼绿</option>
+              <option value="graphite-minimal">石墨极简</option>
+              <option value="olive-journal">橄榄手记</option>
+            </select>
+          </div>
+          <div class="field" id="field-pv-style" hidden><label class="label">排版样式</label>
+            <select class="input" id="pv-style"></select>
+          </div>
+          <div class="field" id="field-pv-code-theme" hidden><label class="label">代码高亮</label>
+            <select class="input" id="pv-code-theme"></select>
+          </div>
+          <div class="field"><label class="label">钩子句（可选，封面卡删除线）</label><input class="input" id="pv-hook" type="text" placeholder="如：AI 又出新玩具了？"></div>
+          <div class="field"><label class="label">副标题（可选）</label><input class="input" id="pv-subtitle" type="text" placeholder="如：真实安装 · 真实翻车 · 真实边界"></div>
+        </div>
+        <p class="hint" id="pv-cover-summary">封面全自动生成，无需选风格或提供图片。相同文章复用封面；标题或正文变化时自动生成对应的新图。</p>
+        <div class="row">
+          <button class="btn primary" id="btn-preview" type="button">生成排版预览</button>
+          <button class="btn ghost" id="btn-import-html" type="button">导入外部排版 HTML</button>
+          <input type="file" id="import-html-file" accept=".html,.htm" hidden>
+          <span class="hint" id="preview-chars"></span>
+        </div>
+        <div class="preview-frame">
+          <iframe id="preview-iframe" title="排版预览"></iframe>
+          <p class="empty" id="preview-placeholder">点击「生成排版预览」后在这里看到公众号最终效果。</p>
+        </div>
+      </section>
+
+      <!-- 阶段 5：发送公众号 -->
+      <section class="panel" id="panel-5">
+        <div class="panel-head">
+          <h2>发送公众号</h2>
+          <p>推送到公众号草稿箱（仅保存草稿，不会自动发表），成功后回填飞书状态「已推送」。</p>
+        </div>
+        <div class="push-config" id="push-config"></div>
+        <div class="row">
+          <button class="btn primary" id="btn-push" type="button">推送草稿箱</button>
+          <span class="hint" id="push-status"></span>
+        </div>
+        <div class="result" id="push-result" hidden></div>
+        <div class="divider"></div>
+        <h3 class="subhead">多平台文案文件（仅生成，不自动发布）</h3>
+        <p class="hint">使用第 3 步的当前稿件，或在下方历史记录中选择文章生成。小红书输出 Markdown 与封面，今日头条输出 Markdown、封面与 DOCX；生成后可点击「在 Finder 中定位文案」，直接找到本地文件上传到对应平台。</p>
+        <div class="row wrap">
+          <button class="btn" id="btn-gen-xhs" type="button">📕 从当前稿件生成小红书文案</button>
+          <button class="btn" id="btn-gen-jrtt" type="button">📰 从当前稿件生成今日头条文案</button>
+          <span class="hint" id="multiplatform-status"></span>
+        </div>
+        <div id="xhs-result" hidden></div>
+        <div id="jrtt-result" hidden></div>
+        <div class="divider"></div>
+        <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h3 class="subhead" style="margin: 0;">历史记录与多平台素材</h3>
+          <button class="btn small" id="btn-open-import-modal-alt" type="button" style="background:#0284c7;color:#fff;border-color:#0284c7;">🐦 导入X推文/外部链接</button>
+        </div>
+        <div class="queue" id="run-history"><p class="empty">暂无历史记录。</p></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 外部推文/文章导入弹窗 -->
+  <div class="modal" id="import-link-modal" hidden>
+    <div class="modal-mask" id="import-link-mask"></div>
+    <div class="modal-box" id="import-link-box" style="max-width: 540px;">
+      <div class="modal-head">
+        <b id="import-modal-title">🐦 导入 X (Twitter) 推文与外部文章</b>
+        <button class="modal-close" id="import-modal-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:13px; color:#475569; margin-bottom:12px; line-height:1.5;">
+          输入推文或文章链接后，系统将<strong>原封不动拉取博主原文案与全部高清原图</strong>并保存至本地运行库。随后可一键生成<strong>小红书图文素材</strong>与<strong>今日头条长图文、DOCX</strong>，下载后请通过各平台官方后台人工审核与发布。
+        </p>
+        <div style="margin-bottom: 12px;">
+          <label class="label">推文或文章链接 URL</label>
+          <input class="input full" id="import-link-url" type="url" placeholder="例如：https://x.com/username/status/1834282312687595779" style="font-size:13px;">
+          <small class="hint" style="display:block; margin-top:4px; color:#64748b;">支持 X/Twitter 推文、微信公众号文章或通用网页链接</small>
+        </div>
+        <div id="import-progress-box" style="display:none; padding:10px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; font-size:12px; color:#1e40af; margin-bottom:10px;">
+          <span class="spinner" style="display:inline-block; margin-right:6px;">⏳</span> <span id="import-progress-text">正在解析文案并下载高清原图，请稍候…</span>
+        </div>
+      </div>
+      <div class="modal-actions" style="display:flex; justify-content:flex-end; gap:8px;">
+        <button class="btn ghost" id="btn-cancel-import" type="button">取消</button>
+        <button class="btn primary" id="btn-confirm-import" type="button" style="background:#0284c7; border-color:#0284c7;">立即解析并导入原图</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="result-modal" hidden>
+    <div class="modal-mask" id="result-modal-mask"></div>
+    <div class="modal-box" id="result-modal-box">
+      <div class="modal-head">
+        <b id="result-modal-title">操作成功</b>
+        <button class="modal-close" id="result-modal-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body" id="result-modal-summary"></div>
+      <div class="modal-actions" id="result-modal-actions"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/static/app.js?v=20261010-batch"></script>
+</body>
+</html>
