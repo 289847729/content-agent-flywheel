@@ -191,6 +191,29 @@ def scan_skills_topics(request: ScanSkillsRequest):
         return fail(exc)
 
 
+class ScanAihotRequest(BaseModel):
+    limit: int = 3
+    add_feishu: bool = True
+
+
+@app.post("/api/topics/scan-aihot")
+def scan_aihot_topics(request: ScanAihotRequest):
+    """一键抓取 aihot.news 热门 AI 榜单前 N 条文章（默认前 3 条），提炼爆款选题并写入飞书。"""
+    try:
+        from fetch_aihot import fetch_aihot_top_topics
+        topics = fetch_aihot_top_topics(limit=request.limit)
+        if not topics:
+            return fail(ValueError("未抓取到 aihot.news 榜单数据，请检查网络连接"))
+        created_count = 0
+        if request.add_feishu:
+            client = feishu_btable.FeishuBitable()
+            created = client.add_records(topics, status="待定")
+            created_count = len(created)
+        return ok(topics=topics, created=created_count)
+    except Exception as exc:
+        return fail(exc)
+
+
 @app.post("/api/topics/select")
 def select_topics(request: SelectRequest):
     if not request.record_ids:

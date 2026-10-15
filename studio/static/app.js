@@ -621,6 +621,32 @@ async function importTopics() {
   });
 }
 
+async function scanAihotTopics() {
+  await withBusy($("btn-scan-aihot"), "抓取 AIHOT 榜单并提炼中…", null, {
+    request: () => api("/api/topics/scan-aihot", {
+      method: "POST",
+      body: { limit: 3, add_feishu: true }
+    }),
+    onSuccess: async (data) => {
+      await refreshTopics(false);
+      document.querySelectorAll("#status-chips .chip").forEach((c) => c.classList.remove("active"));
+      const pendingChip = document.querySelector("#status-chips .chip[data-status='待定']") || document.querySelector("#status-chips .chip[data-status='']");
+      if (pendingChip) {
+        pendingChip.classList.add("active");
+        state.statusFilter = pendingChip.dataset.status;
+      }
+      renderTopics();
+      const listHtml = (data.topics || []).map((t, idx) => `<li><b>Top ${idx + 1}</b>：${esc(t.选题标题 || "")}</li>`).join("");
+      showModal({
+        type: "success",
+        title: "🔥 AIHOT 热点榜 Top 3 入库成功",
+        summaryHtml: `成功从 aihot.news 抓取前三名重磅热点，并已将 <b>${esc(String(data.created || (data.topics || []).length))}</b> 条爆款选题写入系统/飞书（状态为「待定」）。<br><ul style="margin-top:8px;padding-left:18px;line-height:1.6;">${listHtml}</ul><br>页面已自动刷新，可直接勾选启动批量发布。`,
+      });
+      toast(`已成功入库 ${data.created || (data.topics || []).length} 条 AIHOT 热点`, "success");
+    },
+  });
+}
+
 async function scanHotTopics() {
   const limitVal = parseInt($("radar-limit").value, 10) || 5;
   await withBusy($("btn-scan-hot"), "扫描海外热帖并提炼中…", null, {
@@ -2173,6 +2199,7 @@ $("import-html-file").addEventListener("change", (event) => {
 });
 
 $("btn-fetch-topics").addEventListener("click", () => fetchTopics());
+$("btn-scan-aihot").addEventListener("click", scanAihotTopics);
 $("btn-scan-hot").addEventListener("click", scanHotTopics);
 $("btn-scan-skills").addEventListener("click", scanSkillsTopics);
 $("btn-toggle-import").addEventListener("click", () => {
