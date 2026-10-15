@@ -412,6 +412,18 @@ print('不是开头')
         self.assertIn("不是本次事实来源", messages[1]["content"])
         self.assertEqual(chat.call_args.kwargs["max_tokens"], 8192)
 
+    def test_normalize_toutiao_title_enforces_30_chars(self):
+        short_title = "开源平替掀桌！真能省下上千元？"
+        self.assertEqual(llm.normalize_toutiao_title(short_title), short_title)
+
+        long_title = "单线程写代码已死！9.2万星开源ADE神器，用手机与终端随时调度多Agent军团并行干活？真相让人意想不到"
+        normalized = llm.normalize_toutiao_title(long_title)
+        self.assertLessEqual(len(normalized), 30)
+        self.assertGreaterEqual(len(normalized), 15)
+
+        clean_title = llm.normalize_toutiao_title("【今日头条 · 独家拆解】《新模型发布！性能暴涨》")
+        self.assertEqual(clean_title, "新模型发布！性能暴涨")
+
 
 if __name__ == "__main__":
     unittest.main()

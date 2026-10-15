@@ -233,9 +233,9 @@ def create_card_5_summary():
     draw.text((105, 835), "你平时工作中最常用哪款 AI 工具？", font=get_font(22, bold=True), fill="#FFFFFF")
     draw.text((105, 875), "• DeepSeek / ChatGPT / Claude / Kimi / 豆包？", font=get_font(20), fill="#94A3B8")
     draw.text((105, 930), "觉得小米这波开源登顶，能让你换掉手头的工具吗？", font=get_font(22, bold=True), fill="#FFFFFF")
-    draw.text((105, 970), "想看【桌面端离线实测】的扣个「1」，下期安排！", font=get_font(21, bold=True), fill="#FB923C")
+    draw.text((105, 970), "面对闭源商业版与开源自建，你更倾向哪种？", font=get_font(21, bold=True), fill="#FB923C")
 
-    draw.text((70, 1140), "★ 觉得有用别忘了【点赞 + 收藏】防走丢！", font=get_font(26, bold=True), fill="#F43F5E")
+    draw.text((70, 1140), "★ 欢迎在评论区分享你的实测体验！", font=get_font(26, bold=True), fill="#F43F5E")
     draw_footer(draw)
     return img
 

@@ -734,7 +734,8 @@ def build_toutiao_copy_and_save(title: str, markdown: str = "", run_dir: str = "
 
     # 2. LLM 提炼爆款标题、章节结构与封面配置
     jrtt_data = llm.generate_toutiao_copy(title, markdown)
-    jrtt_title = (jrtt_data.get("title") or title).strip()
+    jrtt_title = llm.normalize_toutiao_title((jrtt_data.get("title") or title).strip(), max_chars=30)
+    jrtt_data["title"] = jrtt_title
     cover_cfg = jrtt_data.get("cover_config") or {}
     body_md = (jrtt_data.get("body_markdown") or "").strip()
 

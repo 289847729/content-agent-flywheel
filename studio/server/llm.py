@@ -426,9 +426,20 @@ def chat(messages: list[dict], *, temperature: float = 0.7,
         if finish == "content_filter":
             raise LLMError("模型服务中止了输出（finish_reason=content_filter），未返回不完整内容。")
         if not content.strip():
-            error = data.get("error") or {}
-            message = error.get("message", "") if isinstance(error, dict) else str(error)
-            raise LLMError(f"LLM 未返回正文（finish_reason={finish or '未提供'}）：{message[:200] or '响应中没有可用文本'}")
+            # 检查是否有 reasoning_content / reasoning 兜底
+            msg = choice.get("message") or {}
+            reasoning = str(msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
+            if reasoning and not json_mode:
+                content = reasoning
+            elif network_retries < max_retries:
+                network_retries += 1
+                _safe_warn(f"[Warn] LLM 未返回正文（finish_reason={finish}），正在进行第 {network_retries} 次自动重试...")
+                time.sleep(1.0)
+                continue
+            else:
+                error = data.get("error") or {}
+                message = error.get("message", "") if isinstance(error, dict) else str(error)
+                raise LLMError(f"LLM 未返回正文（finish_reason={finish or '未提供'}）：{message[:200] or '响应中没有可用文本'}")
         return content
 
 
@@ -531,7 +542,7 @@ def generate_ai_image(prompt: str, output_path: str | Path, size: str = "1024x10
     if strict:
         detail = _error_summary(last_error)
         raise LLMError(
-            f"自动封面生图失败；agy：{agy_error}；API：{detail}。"
+            f"自动封面生图失败；agy: {agy_error}；API: {detail}。"
             "请检查 IMAGE_GEN_API_BASE、IMAGE_MODEL 与生图服务可用性。"
         ) from last_error
     return False
@@ -607,20 +618,30 @@ def _generate_ai_image_via_agy(prompt: str, output_path: str | Path) -> bool:
 def parse_json_object(raw: str) -> dict:
     """尽力从 LLM 输出里提取 JSON 对象；失败返回空 dict。"""
     raw = raw.strip()
-    fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", raw, flags=re.S)
-    if fence:
-        raw = fence.group(1).strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, flags=re.S)
+    target = fence.group(1).strip() if fence else raw
     try:
-        data = json.loads(raw)
+        data = json.loads(target, strict=False)
+        if isinstance(data, dict):
+            return data
     except Exception:
-        match = re.search(r"\{.*\}", raw, flags=re.S)
-        if not match:
-            return {}
+        pass
+
+    match = re.search(r"\{.*\}", target, flags=re.S)
+    if match:
         try:
-            data = json.loads(match.group(0))
+            data = json.loads(match.group(0), strict=False)
+            if isinstance(data, dict):
+                return data
         except Exception:
-            return {}
-    return data if isinstance(data, dict) else {}
+            try:
+                cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", match.group(0))
+                data = json.loads(cleaned, strict=False)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+    return {}
 
 
 def _table_cells(line: str) -> list[str]:
@@ -751,6 +772,7 @@ def get_xhs_system_prompt() -> str:
 2. 提炼 4 个核心维度事实（核心爆点、行业震撼、普通人打工福利、理性客观提醒），供渲染 3:4 竖版置顶封面图。
 3. 正文结构一气呵成：黄金前 3 秒 Hook、4 个看点与场景展开（带 Emoji 🖥️/📚/🎧/⚡）、理性冷思考、评论区互动引导与 6 个垂直标签。
 4. 【极其重要的字数限制】：小红书平台对正文有 1000 字符的硬性上限。输出的 body_markdown 必须言简意赅、重点突出，总字数严格控制在 600~750 字之间，留足空间给排版与标签，严禁超过 800 字！
+5. 【平台合规红线与严禁诱导违规（极高优先级）】：严禁输出任何“评论区扣1/扣关键词”、“发你源码/送资料/给指南/领配置/进群”、“点赞收藏私信发你”等诱导互动话术！小红书 AI 审核会通过 OCR 与语义分析直接拦截违规并限流警告。文末“💬 聊聊看”仅允许提出一个引发读者真实探讨或思考的开放式问题（如：“在你的工作流中你更看重哪一点？”）。若涉及开源项目，直接在文末注明公开自查途径（如：“项目开源地址：GitHub 搜索 [项目名] 即可直达仓库自取”），完全免费公开，严禁设置任何互动门槛或承诺！
 
 【输出格式】：
 必须严格输出纯 JSON 对象（不包裹在除 json 以外的多余解释中）：
@@ -776,6 +798,29 @@ def get_xhs_system_prompt() -> str:
 """
 
 
+def _sanitize_xhs_body(text: str) -> str:
+    """过滤小红书正文中的违规诱导互动话术（避免触发小红书 AI 审核违规警告）。"""
+    if not text:
+        return text
+    lines = []
+    for line in text.splitlines():
+        # 如果整行包含诱导关键字
+        if re.search(r'(?:扣|私信).*?(?:1|一|源码|地址|指南|资料|清单|发你|送你|安排|速发|领取|抱走)', line, re.I):
+            continue
+        if re.search(r'(?:想要|获取|领取|送你).*?(?:源码|地址|指引|资料|清单).*?(?:评论|留言|扣|私信)', line, re.I):
+            continue
+        if re.search(r'想看.*?扣.*?安排', line, re.I):
+            continue
+        # 行内句子级别清洗
+        cleaned_line = re.sub(r'[【\[（(]?(?:想要|如需)?(?:源码|资料|指南).*?(?:评论区|留言|私信)?扣.*?发你.*?[】\]）)]?', '', line, flags=re.I)
+        cleaned_line = re.sub(r'评论区扣[“\"【\[]?[^，。\n]+?[”\"】\]]?(?:获取|送你|发你|领取)?[^，。\n]*', '', cleaned_line, flags=re.I)
+        cleaned_line = re.sub(r'想省下会员费的宝子，.*?带你跑通', '', cleaned_line, flags=re.I)
+        if cleaned_line.strip():
+            lines.append(cleaned_line.strip())
+    res = '\n'.join(lines)
+    return re.sub(r'\n{3,}', '\n\n', res).strip()
+
+
 def generate_xhs_copy(title: str, markdown: str) -> dict:
     """根据公众号母稿生成小红书笔记文案及封面配置（动态调用本地 tuiwen-xhs-gen 技能标准）。"""
     user_prompt = f"""请根据以下微信公众号母稿，严格按照本地技能要求提炼出小红书爆款文案和置顶封面配置 JSON。
@@ -794,6 +839,7 @@ def generate_xhs_copy(title: str, markdown: str) -> dict:
     if not data or not data.get("title") or not data.get("body_markdown"):
         # 降级防御
         title_res = title if "！" in title else f"{title}！这波确实没想到🔥"
+        fallback_body = _sanitize_xhs_body(data.get("body_markdown") or raw)
         return {
             "title": data.get("title") or title_res,
             "cover_config": data.get("cover_config") or {
@@ -811,9 +857,34 @@ def generate_xhs_copy(title: str, markdown: str) -> dict:
                 ],
                 "footer_tip": ">> 完整干货拆解，正文见 >>"
             },
-            "body_markdown": data.get("body_markdown") or raw
+            "body_markdown": fallback_body
         }
+    # 强制进行合规清洗
+    if data.get("body_markdown"):
+        data["body_markdown"] = _sanitize_xhs_body(data["body_markdown"])
     return data
+
+
+def normalize_toutiao_title(raw_title: str, max_chars: int = 30) -> str:
+    """今日头条标题严格规范化：去除多余符号，并强制压缩在 30 字符以内，保持语义完整。"""
+    t = (raw_title or "").strip()
+    t = re.sub(r"^#+\s*", "", t)
+    t = re.sub(r"^【(?:今日头条|深度解读|独家拆解|开源爆款|重磅突破)[^】]*】\s*", "", t)
+    t = t.strip("《》\"'“”‘’").strip()
+    if len(t) <= max_chars:
+        return t
+    cut = t[:max_chars]
+    for punct in "？！?!，,:：…":
+        idx = cut.rfind(punct)
+        if idx >= 15:
+            candidate = cut[:idx + 1].strip()
+            if candidate[-1] in "，,:：":
+                candidate = candidate[:-1] + "？"
+            return candidate
+    safe_cut = t[:max_chars - 1].rstrip("，,、:：-— ")
+    if not safe_cut.endswith(("？", "！", "!", "?", "。")):
+        safe_cut += "？"
+    return safe_cut[:max_chars]
 
 
 def get_jrtt_system_prompt() -> str:
@@ -824,7 +895,14 @@ def get_jrtt_system_prompt() -> str:
 你的任务是将用户提供的微信公众号深度母稿，严格依据本地技能规范一键转化为适合今日头条（Toutiao APP）生态传播的“深度爆款长图文”（对应 tuiwen-jrtt-gen 技能标准）。
 {skill_part}
 【核心交付要求】：
-1. 依据头条推荐算法敲定唯一最优爆款标题：公式为 [核心事件/颠覆认知] + [国民级知名主体/反差动作] + [引发求证的悬念疑问]，直接敲定主标题，不给多余备选，严禁出现发布渠道说明废话。**标题字数硬性上限：不超过 30 个汉字（含标点），超出必须精简，不得截断语义。**
+1. 【头条爆款标题字数铁律（绝对红线）】：
+   - 标题总字符数必须在 20~28 字符之间，绝对不得超过 30 个字符（汉字、英文字母、数字和标点符号均计入 1 字符）！
+   - 标题公式：[核心事件/颠覆认知] + [知名主体/反差动作] + [引发求证的悬念疑问]
+   - 示范标杆（严格 ≤ 28 字符）：
+     * 开源平替掀桌OpenAI！告别每月20刀，真能年省上千？（27字符）
+     * 单线程终结！手机调度AI军团，9万星神器革了谁的命？（26字符）
+     * 开源AI向剪映会员开刀！单行命令搞定剪辑，真能平替？（26字符）
+   - 严禁出现过长复合句，严禁包含“【今日头条】”等任何废话渠道说明。直接敲定唯一最优主标题，不给多选。
 2. 专业客观拒绝盲目吹捧，严格基于母稿真实数据，指出客观差距。
 3. 正文脉络结构规范：导语痛点引入 → 一、核心看点榜单成绩（包含 Markdown 三线表格） → 二、颠覆认知底牌细节 → 三、普通人日常落地场景 → 四、理性客观差距点明 → 互动探讨热议问题。
 4. 封面图配置（用于生成 16:9 横版吸睛封面）：提炼主标题、副标题、高光标签。
@@ -832,7 +910,7 @@ def get_jrtt_system_prompt() -> str:
 【输出格式】：
 必须严格输出纯 JSON 对象：
 {{
-  "title": "敲定的头条爆款标题",
+  "title": "敲定的头条爆款标题（严格控制在20~28字，绝不超过30字）",
   "cover_config": {{
     "top_tag": "今日头条 · 深度图文",
     "badge": "【重磅突破】",
@@ -848,6 +926,7 @@ def get_jrtt_system_prompt() -> str:
 def generate_toutiao_copy(title: str, markdown: str) -> dict:
     """根据公众号母稿生成今日头条图文文案及封面配置（动态调用本地 tuiwen-jrtt-gen 技能标准）。"""
     user_prompt = f"""请根据以下微信公众号母稿，严格按照本地技能要求提炼出今日头条深度爆款长图文与 16:9 封面配置 JSON。
+注意：标题必须严格控制在 30 字符以内（推荐 22~28 字符），绝不能超标！
 
 【微信母稿原标题】：{title}
 
@@ -861,30 +940,34 @@ def generate_toutiao_copy(title: str, markdown: str) -> dict:
     raw = chat(messages, temperature=0.7, max_tokens=8192, json_mode=True)
     data = parse_json_object(raw)
     if not data or not data.get("title") or not data.get("body_markdown"):
+        fallback_body = (data.get("body_markdown") if data else "") or ""
+        if not fallback_body:
+            bm_match = re.search(r'"body_markdown"\s*:\s*"(.*?)(?:"\s*,\s*"|"\s*\}\s*$)', raw, flags=re.S)
+            if bm_match:
+                try:
+                    fallback_body = bm_match.group(1).encode("utf-8").decode("unicode_escape", errors="ignore")
+                except Exception:
+                    fallback_body = bm_match.group(1)
+            else:
+                fallback_body = raw
+        fallback_body = re.sub(r"^```(?:json)?\s*", "", fallback_body.strip())
+        fallback_body = re.sub(r"\s*```$", "", fallback_body)
+        raw_title_cand = (data.get("title") if data else "") or title
+        safe_title = normalize_toutiao_title(raw_title_cand, max_chars=30)
         return {
-            "title": data.get("title") or (f"{title}？真相让人意想不到" if "？" not in title else title),
-            "cover_config": data.get("cover_config") or {
+            "title": safe_title,
+            "cover_config": (data.get("cover_config") if data else {}) or {
                 "top_tag": "今日头条 · 独家拆解",
                 "badge": "【深度解读】",
                 "highlight": "颠覆认知",
-                "title": title[:14],
+                "title": safe_title[:14],
                 "subtitle": "背后到底藏着什么大招？"
             },
-            "body_markdown": data.get("body_markdown") or raw
+            "body_markdown": fallback_body
         }
-    # 代码兜底：标题超 30 字时在最后一个标点处截断，保语义完整
-    jrtt_title = data.get("title") or ""
-    if len(jrtt_title) > 30:
-        # 尝试在 ≤30 字内找最后一个标点断点
-        cut = jrtt_title[:30]
-        for punct in "？！，。、…":
-            idx = cut.rfind(punct)
-            if idx >= 20:          # 至少保留 20 字有效语义
-                jrtt_title = cut[:idx + 1]
-                break
-        else:
-            jrtt_title = cut      # 无合适标点则直接截到30字
-        data["title"] = jrtt_title
+
+    # 严格规范化标题，确保无论大模型输出多少字，强制保证 ≤ 30 字符
+    data["title"] = normalize_toutiao_title(data.get("title") or title, max_chars=30)
     return data
 
 
