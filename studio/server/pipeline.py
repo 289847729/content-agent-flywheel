@@ -54,6 +54,33 @@ def sanitize_filename(name: str, max_chars: int = 60) -> str:
     return name or "未命名"
 
 
+def allocate_batch_item_dir(date_str: str | None = None) -> Path:
+    """根据当前日期 yyyy-mm-dd 在 outputs/ 下分配 01, 02 递增序号子目录。"""
+    date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    day_dir = OUTPUTS / date_str
+    with _BATCH_LOCK:
+        day_dir.mkdir(parents=True, exist_ok=True)
+        existing_indices = []
+        empty_dirs = []
+        for p in sorted(day_dir.iterdir()):
+            if p.is_dir() and p.name.isdigit():
+                try:
+                    idx = int(p.name)
+                    existing_indices.append(idx)
+                    # 检查目录是否为空（没有任何非隐藏文件）
+                    if not any(True for f in p.iterdir() if not f.name.startswith(".")):
+                        empty_dirs.append((idx, p))
+                except ValueError:
+                    pass
+        if empty_dirs:
+            empty_dirs.sort(key=lambda x: x[0])
+            return empty_dirs[0][1]
+        next_idx = max(existing_indices, default=0) + 1
+        item_dir = day_dir / f"{next_idx:02d}"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        return item_dir
+
+
 def _write_json(path: Path, data: dict) -> None:
     """原子写入批量状态，避免 GET 读到半个 JSON。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,6 +119,7 @@ def _batch_item(record_id: str) -> dict:
         "record_id": record_id,
         "status": "pending",
         "title": "",
+        "item_dir": "",
         "steps": {},
         "platforms": {
             "wechat": {"status": "pending", "artifacts": []},
@@ -117,6 +145,19 @@ def _run_batch_item(status_path: Path, index: int, options: dict, retry: bool = 
     fields = item.get("fields") or {}
     markdown = item.get("markdown", "")
     title = item.get("title", "")
+
+    # 分配或复用当前选题的序号输出目录（outputs/yyyy-mm-dd/XX/）
+    item_dir_str = item.get("item_dir")
+    if not item_dir_str:
+        item_dir = allocate_batch_item_dir()
+        item_dir_str = str(item_dir)
+        def save_item_dir(target):
+            target["item_dir"] = item_dir_str
+        _set_item(status_path, index, save_item_dir)
+        item = json.loads(status_path.read_text(encoding="utf-8"))["items"][index]
+    else:
+        item_dir = Path(item_dir_str)
+        item_dir.mkdir(parents=True, exist_ok=True)
 
     def step(name, action):
         nonlocal item, markdown, title, fields
@@ -159,7 +200,7 @@ def _run_batch_item(status_path: Path, index: int, options: dict, retry: bool = 
             target["title"] = title
             target["markdown"] = markdown
         _set_item(status_path, index, save_generated)
-        saved = step("save_draft", lambda: save_draft(record_id, title, markdown))
+        saved = step("save_draft", lambda: save_draft(record_id, title, markdown, target_dir=item_dir))
         def save_artifacts(target):
             target["artifacts"] = list(dict.fromkeys(target.get("artifacts", []) + _item_paths(saved)))
         _set_item(status_path, index, save_artifacts)
@@ -195,10 +236,10 @@ def _run_batch_item(status_path: Path, index: int, options: dict, retry: bool = 
     run_dir = str(Path(status_path).parent)
     platform("wechat", lambda: push_draft_article(
         record_id, title, options.get("author", ""), options.get("theme", "moyu-green"), markdown,
-        engine=options.get("engine", "builtin"),
+        engine=options.get("engine", "builtin"), target_dir=item_dir,
     ))
-    platform("xhs", lambda: build_xhs_copy_and_save(title, markdown, run_dir))
-    platform("toutiao", lambda: build_toutiao_copy_and_save(title, markdown, run_dir))
+    platform("xhs", lambda: build_xhs_copy_and_save(title, markdown, run_dir, target_dir=item_dir))
+    platform("toutiao", lambda: build_toutiao_copy_and_save(title, markdown, run_dir, target_dir=item_dir))
     def complete(target):
         states = [value["status"] for value in target["platforms"].values()]
         if all(value == "success" for value in states):
@@ -251,7 +292,7 @@ def retry_batch_publish(job_id: str) -> dict:
     status["status"] = "running"
     _write_json(status_path, status)
     for index, item in enumerate(status["items"]):
-        if item.get("status") in {"failed", "partial"}:
+        if item.get("status") != "success":
             _run_batch_item(status_path, index, status.get("options", {}), retry=True)
     def finish(data):
         states = [item["status"] for item in data["items"]]
@@ -366,15 +407,21 @@ def normalize_markdown(markdown: str) -> str:
     return "\n".join(out)
 
 
-def save_draft(record_id: str, title: str, markdown: str) -> dict:
-    """保存初稿到 outputs/{日期}-{标题}.md，并回填飞书（文章标题、稿件路径）。"""
+def save_draft(record_id: str, title: str, markdown: str, target_dir: str | Path | None = None) -> dict:
+    """保存初稿到指定目录或 outputs/{日期}-{标题}.md，并回填飞书（文章标题、稿件路径）。"""
     title = (title or "").strip()
     if not title:
         raise ValueError("标题不能为空")
     if not markdown.strip():
         raise ValueError("初稿内容为空")
     date = datetime.now().strftime("%Y-%m-%d")
-    path = OUTPUTS / f"{date}-{sanitize_filename(title)}.md"
+    safe_title = sanitize_filename(title)
+    if target_dir:
+        dir_path = Path(target_dir)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        path = dir_path / f"{safe_title}-公众号初稿.md"
+    else:
+        path = OUTPUTS / f"{date}-{safe_title}.md"
     path.write_text(markdown.strip() + "\n", encoding="utf-8")
 
     client = feishu_btable.FeishuBitable()
@@ -417,7 +464,7 @@ def push_draft_article(record_id: str, title: str, author: str, theme: str,
                        markdown: str = "", imported_html: str = "",
                        hook: str = "", subtitle: str = "", engine: str = "builtin",
                        style: str = bmmd_typeset.DEFAULT_STYLE,
-                       code_theme: str = "") -> dict:
+                       code_theme: str = "", target_dir: str | Path | None = None) -> dict:
     """排版并推送草稿箱，成功后回填飞书状态「已推送」。
 
     imported_html 非空时直接推送外部排版稿（如 gzh-design-skill 产出），
@@ -430,6 +477,7 @@ def push_draft_article(record_id: str, title: str, author: str, theme: str,
 
     outdir = RUNS / datetime.now().strftime("%Y-%m-%d-%H%M%S")
     outdir.mkdir(parents=True, exist_ok=True)
+    cover = None
     if imported_html.strip():
         html = imported_html
     else:
@@ -454,6 +502,18 @@ def push_draft_article(record_id: str, title: str, author: str, theme: str,
     client = feishu_btable.FeishuBitable()
     client.update_record(record_id, {"状态": "已推送"})
     record["run_dir"] = str(outdir)
+
+    if target_dir and cover and cover.get("path"):
+        try:
+            td = Path(target_dir)
+            td.mkdir(parents=True, exist_ok=True)
+            safe = sanitize_filename(title)
+            dest_cover = td / f"{safe}-公众号封面.jpg"
+            dest_cover.write_bytes(Path(cover["path"]).read_bytes())
+            record["cover_path"] = str(dest_cover)
+        except Exception as exc:
+            logger.warning("复制公众号封面至目标目录失败: %s", exc)
+
     return record
 
 
@@ -598,8 +658,13 @@ def find_markdown_for_title(title: str, run_dir: str = "") -> str:
                 if content:
                     return content
 
-    # 2. 从 outputs/*.md 中寻找匹配
+    # 2. 从 outputs/*/*/*.md 及 outputs/*.md 中寻找匹配
     if title:
+        for p in sorted(OUTPUTS.glob("*/*/*.md"), reverse=True):
+            if p.is_file() and (safe in p.stem or title in p.stem or p.stem in safe or p.stem in title):
+                content = p.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
         for p in sorted(OUTPUTS.glob("*.md"), reverse=True):
             if p.is_file() and (safe in p.stem or title in p.stem or p.stem in safe or p.stem in title):
                 content = p.read_text(encoding="utf-8").strip()
@@ -639,8 +704,8 @@ def import_external_article(url: str) -> dict:
     return article_extractor.import_article_to_run(url)
 
 
-def build_xhs_copy_and_save(title: str, markdown: str = "", run_dir: str = "") -> dict:
-    """根据母稿生成小红书爆款文案，渲染 3:4 置顶封面图，打包装载博主推文全部原图图集，落盘 outputs/小红书/。"""
+def build_xhs_copy_and_save(title: str, markdown: str = "", run_dir: str = "", target_dir: str | Path | None = None) -> dict:
+    """根据母稿生成小红书爆款文案，渲染 3:4 置顶封面图，打包装载博主推文全部原图图集，落盘指定目录或 outputs/小红书/。"""
     title = (title or "").strip()
     if not title:
         raise ValueError("母稿标题不能为空")
@@ -649,27 +714,38 @@ def build_xhs_copy_and_save(title: str, markdown: str = "", run_dir: str = "") -
     if not markdown.strip():
         raise ValueError("母稿内容为空，且 outputs/ 下未找到匹配的母稿 Markdown 或 HTML 文件")
 
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    XHS_DIR.mkdir(parents=True, exist_ok=True)
-    images_dir = XHS_DIR / "images"
-    images_dir.mkdir(parents=True, exist_ok=True)
-
     # 1. LLM 提炼文案与封面配置
     xhs_data = llm.generate_xhs_copy(title, markdown)
     xhs_title = (xhs_data.get("title") or title).strip()
     cover_cfg = xhs_data.get("cover_config") or {}
     body_md = (xhs_data.get("body_markdown") or "").strip()
 
-    # 2. handraw-style 选择风格/构图/配色，Gemini 生成主题插画并叠加平台标题
+    # 2. 路径规划：优先使用 target_dir，否则落盘至 XHS_DIR
     safe_title = sanitize_filename(xhs_title)
-    cover_filename = f"{date_str}-{safe_title}_cover.jpg"
-    cover_path = images_dir / cover_filename
+    if target_dir:
+        out_dir = Path(target_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cover_filename = f"{safe_title}-小红书封面.jpg"
+        cover_path = out_dir / cover_filename
+        md_filename = f"{safe_title}-小红书笔记.md"
+        md_path = out_dir / md_filename
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        XHS_DIR.mkdir(parents=True, exist_ok=True)
+        images_dir = XHS_DIR / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        cover_filename = f"{date_str}-{safe_title}_cover.jpg"
+        cover_path = images_dir / cover_filename
+        md_filename = f"{date_str}-{safe_title}-小红书笔记.md"
+        md_path = XHS_DIR / md_filename
+
+    # 3. handraw-style 选择风格/构图/配色，Gemini 生成主题插画并叠加平台标题
     cover = platform_cover.ensure_platform_cover(
         "xhs", xhs_title, markdown, {**xhs_data, "cover_config": cover_cfg}, cover_path,
     )
     base64_data_url = cover["data_url"]
 
-    # 3. 收集该文章包含的全部博主推文原图（与封面合并为轮播图集）
+    # 4. 收集该文章包含的全部博主推文原图（与封面合并为轮播图集）
     tweet_images: list[str] = []
     if run_dir:
         img_dir = Path(run_dir) / "images"
@@ -679,10 +755,8 @@ def build_xhs_copy_and_save(title: str, markdown: str = "", run_dir: str = "") -
 
     all_upload_images = [str(cover_path)] + tweet_images
 
-    # 4. 组装小红书标准 Markdown（首行嵌入 Base64 置顶封面）
+    # 5. 组装小红书标准 Markdown（首行嵌入 Base64 置顶封面）
     full_markdown = f"# {xhs_title}\n\n![小红书置顶封面图]({base64_data_url})\n\n{body_md}\n"
-    md_filename = f"{date_str}-{safe_title}-小红书笔记.md"
-    md_path = XHS_DIR / md_filename
     md_path.write_text(full_markdown, encoding="utf-8")
 
     if run_dir:
@@ -711,8 +785,8 @@ def build_xhs_copy_and_save(title: str, markdown: str = "", run_dir: str = "") -
     }
 
 
-def build_toutiao_copy_and_save(title: str, markdown: str = "", run_dir: str = "") -> dict:
-    """根据母稿生成今日头条深度长图文，嵌入博主推文全部原图，生成 16:9 横版吸睛封面，并排版导出 DOCX 文件。"""
+def build_toutiao_copy_and_save(title: str, markdown: str = "", run_dir: str = "", target_dir: str | Path | None = None) -> dict:
+    """根据母稿生成今日头条深度长图文，嵌入博主推文全部原图，生成 16:9 横版吸睛封面，并排版导出 DOCX 文件至指定目录或 outputs/今日头条/。"""
     title = (title or "").strip()
     if not title:
         raise ValueError("母稿标题不能为空")
@@ -720,9 +794,6 @@ def build_toutiao_copy_and_save(title: str, markdown: str = "", run_dir: str = "
         markdown = find_markdown_for_title(title, run_dir)
     if not markdown.strip():
         raise ValueError("母稿内容为空，且 outputs/ 下未找到匹配的母稿 Markdown 或 HTML 文件")
-
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    JRTT_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. 扫描推文原图并准备嵌入
     tweet_images: list[str] = []
@@ -746,23 +817,37 @@ def build_toutiao_copy_and_save(title: str, markdown: str = "", run_dir: str = "
             gallery_md += f"![原推配图{idx}]({img_p})\n\n"
         body_md += gallery_md
 
-    # 3. handraw-style 选择风格/构图/配色，Gemini 生成 16:9 主题插画并叠加平台标题
+    # 3. 路径规划：优先使用 target_dir，否则落盘至 JRTT_DIR
     safe_title = sanitize_filename(jrtt_title)
-    cover_filename = f"{date_str}-{safe_title}-今日头条封面.jpg"
-    cover_path = JRTT_DIR / cover_filename
+    if target_dir:
+        out_dir = Path(target_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cover_filename = f"{safe_title}-今日头条封面.jpg"
+        cover_path = out_dir / cover_filename
+        md_filename = f"{safe_title}-今日头条文案.md"
+        md_path = out_dir / md_filename
+        docx_filename = f"{safe_title}-今日头条文案.docx"
+        docx_path = out_dir / docx_filename
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        JRTT_DIR.mkdir(parents=True, exist_ok=True)
+        cover_filename = f"{date_str}-{safe_title}-今日头条封面.jpg"
+        cover_path = JRTT_DIR / cover_filename
+        md_filename = f"{date_str}-{safe_title}-今日头条文案.md"
+        md_path = JRTT_DIR / md_filename
+        docx_filename = f"{date_str}-{safe_title}-今日头条文案.docx"
+        docx_path = JRTT_DIR / docx_filename
+
+    # 4. handraw-style 选择风格/构图/配色，Gemini 生成 16:9 主题插画并叠加平台标题
     cover = platform_cover.ensure_platform_cover(
         "toutiao", jrtt_title, markdown, {**jrtt_data, "cover_config": cover_cfg}, cover_path,
     )
 
-    # 4. 组装 Markdown 并落盘
+    # 5. 组装 Markdown 并落盘
     full_markdown = f"# {jrtt_title}\n\n![今日头条封面图]({cover_filename})\n\n{body_md}\n"
-    md_filename = f"{date_str}-{safe_title}-今日头条文案.md"
-    md_path = JRTT_DIR / md_filename
     md_path.write_text(full_markdown, encoding="utf-8")
 
-    # 5. 自动编译导出高质量排版 DOCX 文件（带三线表、红标装饰、互动框、原推图）
-    docx_filename = f"{date_str}-{safe_title}-今日头条文案.docx"
-    docx_path = JRTT_DIR / docx_filename
+    # 6. 自动编译导出高质量排版 DOCX 文件（带三线表、红标装饰、互动框、原推图）
     docx_ok = False
     try:
         markdown_to_docx.parse_markdown_to_docx(str(md_path), str(docx_path), str(cover_path))

@@ -34,13 +34,22 @@ AI_KEYWORDS = [
 ]
 
 
+def _safe_log(msg: str) -> None:
+    """安全向 stderr 输出日志，在断开的终端/后台守护进程下遇到 EIO / BrokenPipe 时静默忽略。"""
+    try:
+        sys.stderr.write(f"{msg}\n")
+        sys.stderr.flush()
+    except (OSError, IOError, BrokenPipeError):
+        pass
+
+
 def fetch_url_json(url: str, timeout: int = 10) -> dict | list | None:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        print(f"[Warn] 请求失败 {url}: {exc}", file=sys.stderr)
+        _safe_log(f"[Warn] 请求失败 {url}: {exc}")
         return None
 
 
@@ -218,7 +227,7 @@ def synthesize_topics_with_llm(raw_items: list[dict], limit: int = 10) -> list[d
             if parsed_topics:
                 return parsed_topics[:limit]
         except Exception as exc:
-            print(f"[Warn] LLM 总结选题失败，降级为规则提炼: {exc}", file=sys.stderr)
+            _safe_log(f"[Warn] LLM 总结选题失败，降级为规则提炼: {exc}")
 
     # 兜底规则提炼（无 LLM 或 LLM 失败时保证可用）
     fallback_topics = []
@@ -238,20 +247,20 @@ def synthesize_topics_with_llm(raw_items: list[dict], limit: int = 10) -> list[d
 
 def fetch_daily_hot_topics(hours: float = 24.0, limit: int = 10) -> list[dict]:
     """主流程：汇聚 HN + HuggingFace，清洗并提炼选题。"""
-    print(f">> [1/3] 正在扫描 Hacker News 过去 {hours} 小时科技与 AI 高分热帖...", file=sys.stderr)
+    _safe_log(f">> [1/3] 正在扫描 Hacker News 过去 {hours} 小时科技与 AI 高分热帖...")
     hn_items = get_hacker_news_hot(max_hours=hours, limit=15)
-    print(f"   找到 {len(hn_items)} 条高分热帖", file=sys.stderr)
+    _safe_log(f"   找到 {len(hn_items)} 条高分热帖")
 
-    print(">> [2/3] 正在扫描 Hugging Face Daily Papers 当日前沿突破...", file=sys.stderr)
+    _safe_log(">> [2/3] 正在扫描 Hugging Face Daily Papers 当日前沿突破...")
     hf_items = get_huggingface_papers(limit=5)
-    print(f"   找到 {len(hf_items)} 篇顶尖论文", file=sys.stderr)
+    _safe_log(f"   找到 {len(hf_items)} 篇顶尖论文")
 
     combined = hn_items + hf_items
     if not combined:
-        print("[Error] 未获取到有效一手数据，请检查网络连接。", file=sys.stderr)
+        _safe_log("[Error] 未获取到有效一手数据，请检查网络连接。")
         return []
 
-    print(f">> [3/3] 正在提炼爆款选题结构与时间戳约束 (共 {len(combined)} 条一手信源)...", file=sys.stderr)
+    _safe_log(f">> [3/3] 正在提炼爆款选题结构与时间戳约束 (共 {len(combined)} 条一手信源)...")
     topics = synthesize_topics_with_llm(combined, limit=limit)
     return topics
 
@@ -276,16 +285,16 @@ def main():
         out_path = Path(args.output).resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json_str, encoding="utf-8")
-        print(f"\n[OK] 选题 JSON 已保存至: {out_path}", file=sys.stderr)
+        _safe_log(f"\n[OK] 选题 JSON 已保存至: {out_path}")
 
     if args.add_feishu:
-        print("\n>> 正在一键写入飞书选题多维表格...", file=sys.stderr)
+        _safe_log("\n>> 正在一键写入飞书选题多维表格...")
         try:
             client = feishu_btable.FeishuBitable()
             created = client.add_records(topics, status="待定")
-            print(f"[OK] 已成功写入飞书表格 {len(created)} 条选题！", file=sys.stderr)
+            _safe_log(f"[OK] 已成功写入飞书表格 {len(created)} 条选题！")
         except Exception as exc:
-            print(f"[Error] 写入飞书失败: {exc}", file=sys.stderr)
+            _safe_log(f"[Error] 写入飞书失败: {exc}")
 
 
 if __name__ == "__main__":

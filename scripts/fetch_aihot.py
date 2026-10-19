@@ -23,13 +23,22 @@ sys.path.insert(0, str(PROJECT_ROOT))
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
 
+def _safe_log(msg: str) -> None:
+    """安全向 stderr 输出日志，在断开的终端/后台守护进程下遇到 EIO / BrokenPipe 时静默忽略。"""
+    try:
+        sys.stderr.write(f"{msg}\n")
+        sys.stderr.flush()
+    except (OSError, IOError, BrokenPipeError):
+        pass
+
+
 def _fetch_url_json(url: str, timeout: int = 10) -> dict | None:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        print(f"[Warn] 获取 URL JSON 失败 {url}: {exc}", file=sys.stderr)
+        _safe_log(f"[Warn] 获取 URL JSON 失败 {url}: {exc}")
         return None
 
 
@@ -39,7 +48,7 @@ def _fetch_url_text(url: str, timeout: int = 10) -> str:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8")
     except Exception as exc:
-        print(f"[Warn] 获取 URL 文本失败 {url}: {exc}", file=sys.stderr)
+        _safe_log(f"[Warn] 获取 URL 文本失败 {url}: {exc}")
         return ""
 
 
@@ -101,7 +110,7 @@ def _refine_title_and_tags(rank: int, raw_title: str, summary: str) -> tuple[str
             cand_cat = data.get("category") or category
             return cand_title, cand_kw, cand_cat
     except Exception as exc:
-        print(f"[Warn] LLM 提炼标题降级: {exc}", file=sys.stderr)
+        _safe_log(f"[Warn] LLM 提炼标题降级: {exc}")
 
     return default_title, keywords, category
 
@@ -161,7 +170,7 @@ def fetch_aihot_top_topics(limit: int = 3) -> list[dict]:
             try:
                 topics.append(f.result())
             except Exception as e:
-                print(f"[Warn] 处理热点事件异常: {e}", file=sys.stderr)
+                _safe_log(f"[Warn] 处理热点事件异常: {e}")
 
     # 保持原榜单排名顺序
     topics.sort(key=lambda t: t.get("_rank", 0))

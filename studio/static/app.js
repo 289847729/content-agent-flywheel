@@ -411,6 +411,8 @@ function renderBatchStatus(data) {
   const done = items.filter((item) => ["success", "partial", "failed"].includes(item.status)).length;
   const platformNames = { wechat: "公众号草稿", xhs: "小红书本地素材", toutiao: "头条本地素材" };
   const isAllSuccess = data.status === "success";
+  const hasIncomplete = items.some((item) => item.status !== "success");
+  const canRetry = data.status !== "success" && hasIncomplete;
 
   box.innerHTML = `<div class="batch-job-summary">
     <b>批量任务 ${esc(data.job_id || state.batchJobId)}</b>
@@ -459,7 +461,7 @@ function renderBatchStatus(data) {
   ${!isAllSuccess && (data.errors || []).length ? `<div class="batch-errors">${data.errors.map((error) => `<div>⚠ ${esc(error.error || error)}</div>`).join("")}</div>` : ""}
   <div class="row batch-job-actions">
     <span class="hint">${data.status === "running" ? "正在轮询最新进度…" : "任务已停止轮询"}</span>
-    ${data.status !== "running" && data.status !== "success" ? `<button class="btn small warn" data-batch-retry="${esc(data.job_id || state.batchJobId)}" type="button">重试失败项</button>` : ""}
+    ${canRetry ? `<button class="btn small warn" data-batch-retry="${esc(data.job_id || state.batchJobId)}" type="button">🔁 重试 / 续跑未完成项</button>` : ""}
   </div>`;
 }
 async function pollBatchPublish(jobId) {

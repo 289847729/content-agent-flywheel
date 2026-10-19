@@ -376,8 +376,14 @@ class BatchPublishRequest(BaseModel):
     author: str = ""
 
 
+_ACTIVE_BATCH_JOBS: set[str] = set()
+_ACTIVE_BATCH_LOCK = threading.Lock()
+
+
 def _start_batch_job(job_id: str, request: BatchPublishRequest) -> None:
     """后台线程入口；编排函数本身保持同步，方便单元测试直接调用。"""
+    with _ACTIVE_BATCH_LOCK:
+        _ACTIVE_BATCH_JOBS.add(job_id)
     try:
         pipeline.run_batch_publish(
             request.record_ids, template=request.template or "auto", theme=request.theme or "moyu-green",
@@ -385,6 +391,9 @@ def _start_batch_job(job_id: str, request: BatchPublishRequest) -> None:
         )
     except Exception as exc:
         pipeline.mark_batch_failed(job_id, exc)
+    finally:
+        with _ACTIVE_BATCH_LOCK:
+            _ACTIVE_BATCH_JOBS.discard(job_id)
 
 
 @app.post("/api/batch-publish")
@@ -409,7 +418,23 @@ def batch_publish(request: BatchPublishRequest):
 @app.get("/api/batch-publish/{job_id}")
 def batch_publish_status(job_id: str):
     try:
-        return ok(**pipeline.get_batch_status(job_id))
+        status_data = pipeline.get_batch_status(job_id)
+        with _ACTIVE_BATCH_LOCK:
+            is_active = job_id in _ACTIVE_BATCH_JOBS
+        if status_data.get("status") == "running" and not is_active:
+            # 自愈机制：如果标记为 running 但内存中无活跃 worker 线程，自动修正为真实状态，解除死锁
+            items = status_data.get("items", [])
+            item_statuses = [it.get("status") for it in items]
+            if all(s == "success" for s in item_statuses):
+                new_status = "success"
+            elif all(s in {"failed", "blocked"} for s in item_statuses):
+                new_status = "failed"
+            else:
+                new_status = "partial"
+            def update_status(cur):
+                cur["status"] = new_status
+            status_data = pipeline._batch_update(pipeline.RUNS / job_id / "batch-status.json", update_status)
+        return ok(**status_data)
     except Exception as exc:
         return fail(exc)
 
@@ -417,15 +442,21 @@ def batch_publish_status(job_id: str):
 @app.post("/api/batch-publish/{job_id}/retry")
 def batch_publish_retry(job_id: str):
     try:
-        # 先确认作业存在，避免把拼写错误静默放进后台线程。
         current = pipeline.get_batch_status(job_id)
-        if current.get("status") == "running":
-            raise ValueError("批量作业仍在运行，完成后才能重试")
+        with _ACTIVE_BATCH_LOCK:
+            is_active = job_id in _ACTIVE_BATCH_JOBS
+        if is_active:
+            raise ValueError("批量作业仍在运行中，请等待完成后重试")
         def retry_worker():
+            with _ACTIVE_BATCH_LOCK:
+                _ACTIVE_BATCH_JOBS.add(job_id)
             try:
                 pipeline.retry_batch_publish(job_id)
             except Exception as exc:
                 pipeline.mark_batch_failed(job_id, exc)
+            finally:
+                with _ACTIVE_BATCH_LOCK:
+                    _ACTIVE_BATCH_JOBS.discard(job_id)
         thread = threading.Thread(target=retry_worker, name=f"{job_id}-retry", daemon=True)
         thread.start()
         return ok(job_id=job_id, status="running")
